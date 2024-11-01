@@ -2,12 +2,9 @@ from typing import Dict, List
 from autogen import ConversableAgent
 import sys
 import os
+import math
 
 def fetch_restaurant_data(restaurant_name: str) -> Dict[str, List[str]]:
-    # TODO
-    # This function takes in a restaurant name and returns the reviews for that restaurant. 
-    # The output should be a dictionary with the key being the restaurant name and the value being a list of reviews for that restaurant.
-    # The "data fetch agent" should have access to this function signature, and it should be able to suggest this as a function call. 
     # Example:
     # > fetch_restaurant_data("Applebee's")
     # {"Applebee's": ["The food at Applebee's was average, with nothing particularly standing out.", ...]}
@@ -15,7 +12,7 @@ def fetch_restaurant_data(restaurant_name: str) -> Dict[str, List[str]]:
         reviews = {}
         for line in rest_data:
             restaurant, review = line.strip().split('. ', 1)
-            if restaurant == restaurant_name:
+            if restaurant.lower() == restaurant_name.lower():
                 if restaurant not in reviews:
                     reviews[restaurant] = []
                 reviews[restaurant].append(review)
@@ -23,86 +20,111 @@ def fetch_restaurant_data(restaurant_name: str) -> Dict[str, List[str]]:
 
 
 def calculate_overall_score(restaurant_name: str, food_scores: List[int], customer_service_scores: List[int]) -> Dict[str, float]:
-    # TODO
-    # This function takes in a restaurant name, a list of food scores from 1-5, and a list of customer service scores from 1-5
-    # The output should be a score between 0 and 10, which is computed as the following:
-    # SUM(sqrt(food_scores[i]**2 * customer_service_scores[i]) * 1/(N * sqrt(125)) * 10
-    # The above formula is a geometric mean of the scores, which penalizes food quality more than customer service. 
-    # Example:
-    # > calculate_overall_score("Applebee's", [1, 2, 3, 4, 5], [1, 2, 3, 4, 5])
-    # {"Applebee's": 5.048}
-    # NOTE: be sure to that the score includes AT LEAST 3  decimal places. The public tests will only read scores that have 
-    # at least 3 decimal places.
-    pass
+    N = len(food_scores)
+    
+    # Calculate the weighted score
+    total_score = sum(math.sqrt(food_scores[i]**2 * customer_service_scores[i]) / math.sqrt(125) for i in range(N))
+    
+    # Normalize and scale to a range of 0 to 10
+    final_score = (1 / N) * total_score * 10
+
+    # Format the final score to have 5 decimal places
+    final_score = "{:.5f}".format(final_score)
+
+    return final_score
+
 
 def get_data_fetch_agent_prompt(restaurant_query: str) -> str:
-    return f'''Extract the restaurant name from this query: {restaurant_query}. '''
-    # TODO
-    # It may help to organize messages/prompts within a function which returns a string. 
-    # For example, you could use this function to return a prompt for the data fetch agent 
-    # to use to fetch reviews for a specific restaurant.
-    # for instance extract restaurant name and return as a string for fetch_restaurant_data
-    # where is agent coming into play?
+    return f'''Extract the restaurant name from this query: {restaurant_query}. Fetch the restaurant reviews data. 
+    Fix the name if no reviews are found.'''
 
-def get_review_analysis_agent_prompt(reviews: Dict[str, List[str]]) -> Dict[str, Dict[str, int]]:
-    # this should be prompt based
-    # TODO: feel free to write as many additional functions as you'd like.
-    pass
+def init_agents(e_msg, d_msg, r_msg, s_msg):
+    llm_config = {"config_list": [{"model": "gpt-4o-mini", "api_key": os.environ.get("OPENAI_API_KEY")}]}
+
+    # the main/entrypoint agent 
+    e_agent = ConversableAgent("entrypoint_agent", 
+                                system_message=e_msg, 
+                                llm_config=llm_config,
+                                human_input_mode="NEVER",
+                                is_termination_msg=lambda msg: "terminate" in (msg["content"].lower() if msg["content"] else ""))
+    # data fetch agent
+    d_agent = ConversableAgent("data_fetch_agent",
+                                system_message=d_msg,
+                                llm_config=llm_config,
+                                human_input_mode="NEVER")
+    # review analyzer agent
+    r_agent = ConversableAgent("review_analyzer_agent",
+                                system_message=r_msg,
+                                llm_config=llm_config,
+                                human_input_mode="NEVER")
+    # scoring agent
+    s_agent = ConversableAgent("scoring_agent",
+                                system_message=s_msg,
+                                llm_config=llm_config,
+                                max_consecutive_auto_reply=1,
+                                human_input_mode="NEVER")
+    
+    return e_agent, d_agent, r_agent, s_agent
 
 # Do not modify the signature of the "main" function.
 def main(user_query: str):
-    entrypoint_agent_system_message = """You are a supervisor that is responsible for coordinating between different agents. The agents available are data_fetch_agent and 
-    review_analysis_agent. First get the data fetched then get the reviews analyzed. End the conversation with an agent when their role is done.""" # TODO
-    data_fetch_agent_message = "You have to fetch data for restaurant reviews and return the keyword bye as well."
-    review_analysis_agent_message = """You have to compute food_score and customer_service_score for all these reviews of a restaurant. The scoring method is as follows:
+    # system messages for all agents
+    entrypoint_agent_system_message = """You are a supervisor responsible for starting and ending a task. 
+    Look for keyword terminate in the replies and end the converstaion then."""
+
+    data_fetch_agent_system_message = """You have to fetch data for restaurant reviews and return the 
+    keyword terminate when you are done. List all reviews without missing any."""
+
+    review_analyzer_agent_system_message = """You are a review analyst and have to compute food_score and 
+    customer_service_score for all reviews of a restaurant. The scoring method is as follows:
     - Score 1/5 has one of these adjectives: awful, horrible, or disgusting.
     - Score 2/5 has one of these adjectives: bad, unpleasant, or offensive.
     - Score 3/5 has one of these adjectives: average, uninspiring, or forgettable.
     - Score 4/5 has one of these adjectives: good, enjoyable, or satisfying.
     - Score 5/5 has one of these adjectives: awesome, incredible, or amazing.
     
-    Return two lists. One for food_scores and the other for customer_service_score"""
+    Each review has exactly only two of these keywords. Return two lists. One for food_scores and the other
+    for customer_service_score. Add terminate in your reply when you are done."""
 
-    # example LLM config for the entrypoint agent
-    llm_config = {"config_list": [{"model": "gpt-4o-mini", "api_key": os.environ.get("OPENAI_API_KEY")}]}
+    scoring_agent_system_message = """You are responsible for calculating overall scores from individual lists 
+    of scores based on a function."""
+
     # the main entrypoint/supervisor agent
-    entrypoint_agent = ConversableAgent("entrypoint_agent", 
-                                        system_message=entrypoint_agent_system_message, 
-                                        llm_config=llm_config,
-                                        human_input_mode="NEVER",
-                                        max_consecutive_auto_reply=2)
-    entrypoint_agent.register_for_llm(name="fetch_restaurant_data", description="Fetches the reviews for a specific restaurant.")(fetch_restaurant_data)
+    entrypoint_agent, data_fetch_agent, review_analyzer_agent, scoring_agent = init_agents(entrypoint_agent_system_message,
+                                                                                            data_fetch_agent_system_message,
+                                                                                            review_analyzer_agent_system_message,
+                                                                                            scoring_agent_system_message)
+
+    # register tool calls for all relevant agents
+    entrypoint_agent.register_for_llm(name="fetch_restaurant_data", description="""Fetches the reviews for a 
+                                      specific restaurant.""")(fetch_restaurant_data)
     entrypoint_agent.register_for_execution(name="fetch_restaurant_data")(fetch_restaurant_data)
 
-    data_fetch_agent = ConversableAgent("data_fetch_agent",
-                                        system_message=data_fetch_agent_message,
-                                        llm_config=llm_config,
-                                        human_input_mode="NEVER")
-    data_fetch_agent.register_for_llm(name="fetch_restaurant_data", description="Fetches the reviews for a specific restaurant.")(fetch_restaurant_data)
+    entrypoint_agent.register_for_llm(name="calculate_overall_score", description="""Calculates overall score from 
+                                      lists of food_scores and customer_service_score")(calculate_overall_score""")
+    entrypoint_agent.register_for_execution(name="calculate_overall_score")(calculate_overall_score)
+
+    data_fetch_agent.register_for_llm(name="fetch_restaurant_data", description="""Fetches the reviews for a specific 
+                                      restaurant.""")(fetch_restaurant_data)
     data_fetch_agent.register_for_execution(name="fetch_restaurant_data")(fetch_restaurant_data)
 
-    review_analysis_agent = ConversableAgent(name="review_analysis_agent",
-                                             system_message="review_analysis_agent_message",
-                                             llm_config=llm_config,
-                                             max_consecutive_auto_reply=1,
-                                             human_input_mode="NEVER")
+    scoring_agent.register_for_llm(name="calculate_overall_score", description="""Calculates overall score from lists 
+                                   of food_scores and customer_service_score""")(calculate_overall_score)
+    scoring_agent.register_for_execution(name="calculate_overall_score")(calculate_overall_score)
     
-    
-    # TODO
-    # Create more agents here. 
-    
-    # TODO
-    # Fill in the argument to `initiate_chats` below, calling the correct agents sequentially.
-    # If you decide to use another conversation pattern, feel free to disregard this code.
-    
-    # Uncomment once you initiate the chat with at least one agent.
-    result = entrypoint_agent.initiate_chats([{"recipient": data_fetch_agent,
-                                               "message": get_data_fetch_agent_prompt(user_query),
-                                               "summary_method": "last_msg"}, 
-                                               {"recipient": review_analysis_agent,
-                                                "message": review_analysis_agent_message,
-                                                "summary_method": "last_msg"}])
-    print(result)
+
+    result = entrypoint_agent.initiate_chats([
+                                                {"recipient": data_fetch_agent,
+                                                "message": get_data_fetch_agent_prompt(user_query),
+                                                "summary_method": "last_msg"}, 
+                                                {"recipient": review_analyzer_agent,
+                                                "message": "These are the restaurant reviews.",
+                                                "summary_method": "last_msg"},
+                                                {"recipient": scoring_agent,
+                                                 "message": "These are the scores for food and customer service of all reviews.",
+                                                 "summary_method": "last_msg"}
+                                                 
+                                            ])
     return result
     
 # DO NOT modify this code below.
